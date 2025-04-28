@@ -164,15 +164,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Đọc Magic
-   /* WORD magic;
-    fread(&magic, sizeof(WORD), 1, file);
+     //Đọc Section Table
+    IMAGE_SECTION_HEADER sectionHeader;
+    printf("\n___SECTION HEADER___\n");
 
-    if (magic != 0x10B && magic != 0x20B) {
-        printf("\n ***Only PE32 (32-bit) and PE64 (64-bit) are supported in this tool.\n");
-        fclose(file);
-        return 1;
-    }*/
+    for (int i = 0; i < fileHeader.NumberOfSections; i++) {
+        fread(&sectionHeader, sizeof(IMAGE_SECTION_HEADER), 1, file);
+        printf("[%d] Name %s \n", i+1, sectionHeader.Name);
+        printf("   Virtual Address: %X\n", sectionHeader.VirtualAddress);
+        printf("   Virtual Size: %X\n", sectionHeader.Misc.VirtualSize);
+        printf("   Raw Address: %X\n", sectionHeader.PointerToRawData);
+        printf("   Size Of Raw Data: %X\n", sectionHeader.SizeOfRawData);
+        printf("   Reloccation Address: %X\n", sectionHeader.PointerToRelocations);
+        printf("   Relocations Number: %X\n", sectionHeader.NumberOfRelocations);
+        printf("   LineNumber: %X\n", sectionHeader.PointerToLinenumbers);
+        printf("   Linenumbers Number: %X\n", sectionHeader.NumberOfLinenumbers);
+        printf("   Characteristics: %X\n", sectionHeader.Characteristics);
+    }
 
     fclose(file);
     return 0;
