@@ -21,6 +21,18 @@ const char* directoryNames[IMAGE_NUMBEROF_DIRECTORY_ENTRIES] = {
     "Reserved"
 };
 
+DWORD RvaToOffset(DWORD rva, IMAGE_SECTION_HEADER* sections, int sectionCount) {
+    for (int i = 0; i < sectionCount; i++) {
+        DWORD sectionVA = sections[i].VirtualAddress;
+        DWORD sectionSize = sections[i].Misc.VirtualSize;
+        if (rva >= sectionVA && rva < sectionVA + sectionSize) {
+            return rva - sectionVA + sections[i].PointerToRawData;
+        }
+    }
+    return 0; // Không tìm thấy
+}
+
+DWORD importRVA = 0;
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -115,6 +127,9 @@ int main(int argc, char* argv[]) {
             printf("   RVA: 0x%X\n", optionalHeader.DataDirectory[i].VirtualAddress);
             printf("   Size: 0x%X\n", optionalHeader.DataDirectory[i].Size);
         }
+
+        importRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+
     }
     else if (fileHeader.SizeOfOptionalHeader == sizeof(IMAGE_OPTIONAL_HEADER64)) {
         IMAGE_OPTIONAL_HEADER64 optionalHeader;
@@ -157,6 +172,8 @@ int main(int argc, char* argv[]) {
             printf("   RVA: 0x%X\n", optionalHeader.DataDirectory[i].VirtualAddress);
             printf("   Size: 0x%X\n", optionalHeader.DataDirectory[i].Size);
         }
+        importRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+
     }
     else {
         printf("Unknown Optional Header size: %d\n", fileHeader.SizeOfOptionalHeader);
@@ -164,22 +181,102 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-     //Đọc Section Table
-    IMAGE_SECTION_HEADER sectionHeader;
-    printf("\n___SECTION HEADER___\n");
+    long sectionTableOffset =
+        dosHeader.e_lfanew
+        + sizeof(DWORD)                    // PE signature
+        + sizeof(IMAGE_FILE_HEADER)
+        + fileHeader.SizeOfOptionalHeader; // SizeOfOptionalHeader đã đọc
 
+    fseek(file, sectionTableOffset, SEEK_SET);
+
+    // Cấp phát mảng sections
+    IMAGE_SECTION_HEADER* sections = (IMAGE_SECTION_HEADER*)
+        malloc(sizeof(IMAGE_SECTION_HEADER) * fileHeader.NumberOfSections);
+    if (!sections) {
+        perror("malloc");
+        fclose(file);
+        return 1;
+    }
+
+    printf("\n___SECTION HEADER___\n");
     for (int i = 0; i < fileHeader.NumberOfSections; i++) {
-        fread(&sectionHeader, sizeof(IMAGE_SECTION_HEADER), 1, file);
-        printf("[%d] Name %s \n", i+1, sectionHeader.Name);
-        printf("   Virtual Address: %X\n", sectionHeader.VirtualAddress);
-        printf("   Virtual Size: %X\n", sectionHeader.Misc.VirtualSize);
-        printf("   Raw Address: %X\n", sectionHeader.PointerToRawData);
-        printf("   Size Of Raw Data: %X\n", sectionHeader.SizeOfRawData);
-        printf("   Reloccation Address: %X\n", sectionHeader.PointerToRelocations);
-        printf("   Relocations Number: %X\n", sectionHeader.NumberOfRelocations);
-        printf("   LineNumber: %X\n", sectionHeader.PointerToLinenumbers);
-        printf("   Linenumbers Number: %X\n", sectionHeader.NumberOfLinenumbers);
-        printf("   Characteristics: %X\n", sectionHeader.Characteristics);
+        // Đọc thẳng vào phần tử i của mảng
+        if (fread(&sections[i], sizeof(IMAGE_SECTION_HEADER), 1, file) != 1) {
+            fprintf(stderr, "Failed to read section %d\n", i);
+            free(sections);
+            fclose(file);
+            return 1;
+        }
+
+        printf("[%d] Name %s \n", i+1, sections[i].Name);
+        printf("   Virtual Address: %X\n", sections[i].VirtualAddress);
+        printf("   Virtual Size: %X\n", sections[i].Misc.VirtualSize);
+        printf("   Raw Address: %X\n", sections[i].PointerToRawData);
+        printf("   Size Of Raw Data: %X\n", sections[i].SizeOfRawData);
+        printf("   Reloccation Address: %X\n", sections[i].PointerToRelocations);
+        printf("   Relocations Number: %X\n", sections[i].NumberOfRelocations);
+        printf("   LineNumber: %X\n", sections[i].PointerToLinenumbers);
+        printf("   Linenumbers Number: %X\n", sections[i].NumberOfLinenumbers);
+        printf("   Characteristics: %X\n", sections[i].Characteristics);
+    }
+
+   
+    DWORD importOffset = RvaToOffset(importRVA, sections, fileHeader.NumberOfSections);
+
+    if (importOffset == 0) {
+        printf("Cannot locate Import Directory\n");
+    }
+    else {
+        // importOffset là file-offset của Import Directory (đã tính bằng RvaToOffset trước đó)
+
+        DWORD descCount = 0;
+        long   baseDescOffset = importOffset;
+        printf("\n___IMPORT TABLE___\n");
+        while (1) {
+            // 1) Đọc descriptor thứ descCount
+            IMAGE_IMPORT_DESCRIPTOR impDesc;
+            fseek(file, baseDescOffset + descCount * sizeof(impDesc), SEEK_SET);
+            if (fread(&impDesc, sizeof(impDesc), 1, file) != 1) break;
+            if (impDesc.Name == 0) break;   // gặp null-descriptor → hết
+
+            // 2) In tên DLL
+            DWORD nameOff = RvaToOffset(impDesc.Name, sections, fileHeader.NumberOfSections);
+            fseek(file, nameOff, SEEK_SET);
+            char dllName[256];
+            fgets(dllName, sizeof(dllName), file);
+            printf("DLL: %s\n", dllName);
+
+            // 3) Duyệt các thunk entry
+            DWORD thunkRVA = impDesc.OriginalFirstThunk
+                ? impDesc.OriginalFirstThunk
+                : impDesc.FirstThunk;
+            DWORD baseThunkOffset = RvaToOffset(thunkRVA, sections, fileHeader.NumberOfSections);
+
+            for (DWORD t = 0; ; t++) {
+                DWORD thunkData;
+                fseek(file, baseThunkOffset + t * sizeof(DWORD), SEEK_SET);
+                if (fread(&thunkData, sizeof(thunkData), 1, file) != 1) break;
+                if (thunkData == 0) break;   // hết danh sách hàm
+
+                if (!(thunkData & IMAGE_ORDINAL_FLAG32)) {
+                    // Import by name
+                    DWORD hintNameOff = RvaToOffset(thunkData, sections, fileHeader.NumberOfSections);
+                    fseek(file, hintNameOff + 2, SEEK_SET);  // +2 skip Hint
+                    char funcName[256];
+                    fgets(funcName, sizeof(funcName), file);
+                    printf("  Function: %s\n", funcName);
+                }
+                else {
+                    // Import by ordinal
+                    printf("  Ordinal: 0x%X\n", thunkData & 0xFFFF);
+                }
+            }
+
+            // 4) Chuyển sang descriptor tiếp theo
+            descCount++;
+        }
+
+
     }
 
     fclose(file);
