@@ -181,6 +181,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+
+    bool isPE32 = (fileHeader.SizeOfOptionalHeader == sizeof(IMAGE_OPTIONAL_HEADER32));
+
     long sectionTableOffset =
         dosHeader.e_lfanew
         + sizeof(DWORD)                    // PE signature
@@ -252,30 +255,53 @@ int main(int argc, char* argv[]) {
                 : impDesc.FirstThunk;
             DWORD baseThunkOffset = RvaToOffset(thunkRVA, sections, fileHeader.NumberOfSections);
 
-            for (DWORD t = 0; ; t++) {
-                DWORD thunkData;
-                fseek(file, baseThunkOffset + t * sizeof(DWORD), SEEK_SET);
-                if (fread(&thunkData, sizeof(thunkData), 1, file) != 1) break;
-                if (thunkData == 0) break;   // hết danh sách hàm
+            if (isPE32) {
+                // --- XỬ LÝ THUNK 32-BIT ---
+                for (DWORD t = 0; ; t++) {
+                    DWORD thunkData32;
+                    fseek(file, baseThunkOffset + t * sizeof(DWORD), SEEK_SET);
+                    if (fread(&thunkData32, sizeof(thunkData32), 1, file) != 1 || thunkData32 == 0)
+                        break;
 
-                if (!(thunkData & IMAGE_ORDINAL_FLAG32)) {
-                    // Import by name
-                    DWORD hintNameOff = RvaToOffset(thunkData, sections, fileHeader.NumberOfSections);
-                    fseek(file, hintNameOff + 2, SEEK_SET);  // +2 skip Hint
-                    char funcName[256];
-                    fgets(funcName, sizeof(funcName), file);
-                    printf("  Function: %s\n", funcName);
+                    if (!(thunkData32 & IMAGE_ORDINAL_FLAG32)) {
+                        DWORD hintNameRVA = thunkData32;
+                        DWORD hintNameOff = RvaToOffset(hintNameRVA, sections, fileHeader.NumberOfSections);
+                        fseek(file, hintNameOff + 2, SEEK_SET);
+                        char funcName[256];
+                        fgets(funcName, sizeof(funcName), file);
+                        printf("    %s\n", funcName);
+                    }
+                    else {
+                        printf("    Ordinal: 0x%X\n", thunkData32 & 0xFFFF);
+                    }
                 }
-                else {
-                    // Import by ordinal
-                    printf("  Ordinal: 0x%X\n", thunkData & 0xFFFF);
+            }
+            else {
+                // --- XỬ LÝ THUNK 64-BIT ---
+                for (DWORD t = 0; ; t++) {
+                    ULONGLONG thunkData64;
+                    fseek(file, baseThunkOffset + t * sizeof(ULONGLONG), SEEK_SET);
+                    if (fread(&thunkData64, sizeof(thunkData64), 1, file) != 1 || thunkData64 == 0)
+                        break;
+
+                    if (!(thunkData64 & IMAGE_ORDINAL_FLAG64)) {
+                        // thấp 32 bit mới là RVA tới IMAGE_IMPORT_BY_NAME
+                        DWORD hintNameRVA = (DWORD)thunkData64;
+                        DWORD hintNameOff = RvaToOffset(hintNameRVA, sections, fileHeader.NumberOfSections);
+                        fseek(file, hintNameOff + 2, SEEK_SET);
+                        char funcName[256];
+                        fgets(funcName, sizeof(funcName), file);
+                        printf("    %s\n", funcName);
+                    }
+                    else {
+                        printf("    Ordinal: 0x%llX\n", thunkData64 & 0xFFFF);
+                    }
                 }
             }
 
             // 4) Chuyển sang descriptor tiếp theo
             descCount++;
         }
-
 
     }
 
