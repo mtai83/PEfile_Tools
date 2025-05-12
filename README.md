@@ -8,6 +8,8 @@ Chương trình này có chức năng phân tích và trích xuất thông tin t
 
 ![image](https://github.com/user-attachments/assets/e3c4f298-8fd2-46c4-a5d8-4a4dba011f75)
 
+## Tham khảo công cụ GUI PEfile_Tools
+Giao diện đồ họa thân thiện, dễ sử dụng: https://github.com/mtai83/PEfile_GUI_Tools
 
 📜 Author 
 
